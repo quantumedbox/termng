@@ -1,22 +1,27 @@
 import termng
 
 var term = initTerminal()
-var guic = initGuiContext()
 term.setTitle "thing without meaning"
-var panel = guic.createGuiObj(ListContainer)
-guic.deref(panel).set "size", (10u, term.size.y)
-guic.deref(panel).set "bg", bgBlue
-var txt = guic.createGuiObj(Label)
-guic.deref(txt).set "text", "what the fuck"
-var txtAnother = guic.createGuiObj(Label)
-guic.deref(txtAnother).set "text", "dynamism my ass"
-guic.sub panel, txt
-guic.sub panel, txtAnother
+
+var guic = initGuiContext()
+guic.makeCurrent()
+
+let panel = createGuiObj ListContainer
+panel.setSize (10u, term.getSize().y)
+panel.setBackgroundColor bgBlue
+let text = createGuiObj Label
+text.setText "what the fuck"
+let another_txt = createGuiObj Label
+another_txt.setText "uh"
+panel.sub text, another_txt
+
+# panel.focus()
 
 while true:
   term.updateEvents()
   if term.testKeyEvent KeyEscape:
     break
-  guic.drawHierarchy panel, term, (0u, 0u), term.size
+  drawTo term, panel, (0u, 0u), term.getSize()
+  # passInput term.getEvents()
   term.flush()
 term.close()

@@ -69,7 +69,6 @@ when defined(windows):
     FILE_TYPE_PIPE    = 0x0003
     FILE_TYPE_UNKNOWN = 0x0000
 
-
   proc readInput*(file: File): string =
     const BufferN = 128 # Maximum N of bytes that could be read at once
     case WaitForSingleObject(GetStdHandle(STD_INPUT_HANDLE), 0.DWORD)
@@ -139,7 +138,8 @@ when defined(windows):
     case mode:
     of FileMode.Console:
       let os_handle = getOsFileHandle(file)
-      discard SetConsoleCursorPosition(os_handle, COORD(X: 0.SHORT, Y: 0.SHORT)) # have to do this to prevent crush https://github.com/microsoft/terminal/issues/2366
+      # have to do this to prevent crush https://github.com/microsoft/terminal/issues/2366
+      discard SetConsoleCursorPosition(os_handle, COORD(X: 0.SHORT, Y: 0.SHORT))
       let err = SetConsoleScreenBufferSize(os_handle, COORD(X: size.x.SHORT, Y: size.y.SHORT))
       if err == 0:
         raise newException(CatchableError, "error while setting terminal buffer size")

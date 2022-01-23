@@ -1,11 +1,22 @@
 import termng_terminal, termng_types
 
-# todo: function for resolving of unused objects
-# todo: recursive GUI elements might be possible if we assure that area will become smaller each call and when no area left - drawing is finished
+# todo: function for resolving unused objects
+# todo: objects could be made non ref counted as they're stored exclusively within context
 
 type
   GuiObj* {.inheritable.} = object
     ## Root object of all GUI elements
+
+  GuiContext* = object
+    ## Such contexts own all gui objects and manage their hierarchy
+    object_pool: seq[Node] # plain array of all nodes in given context
+    free_pool: seq[int] # indexes in object_pool that are free to reuse
+    focus_hierarchy: seq[int] # sequence of nested nodes
+
+  Node = object
+    obj: ref GuiObj
+    subs: seq[int]  # which objects are subscribed to this
+    bases: seq[int] # where this object is subscribed
 
   Behaviour* = enum
     None
@@ -22,22 +33,21 @@ type
     fg*: ForegroundColor
     bg*: BackgroundColor
 
-type
-  GuiContext* = object
-    ## Such contexts own all gui objects and manage their hierarchy
-    object_pool: seq[Node] # plain array of all nodes in given context
-    free_pool: seq[int] # indexes in object_pool that are free to reuse
-    focus_sub: int # object that is subscribed for getting sole input
 
-  Node = object
-    obj: ref GuiObj
-    subs: seq[int]  # which objects are subscribed to this
-    bases: seq[int] # where this object is subscribed
+# todo: self unbinding on destruction of current context?
+var current_context: ref GuiContext = nil
 
-func initGuiContext*: GuiContext =
-  GuiContext()
+func initGuiContext*: ref GuiContext =
+  result = new GuiContext
+  # result.current_focus = -1
 
-func createGuiObj*(c: var GuiContext, t: typedesc[GuiObj]): int =
+proc makeCurrent*(c: ref GuiContext) =
+  current_context = c
+
+proc unbind*(c: ref GuiContext) =
+  current_context = nil
+
+func createGuiObjB*(c: ref GuiContext, t: typedesc[GuiObj]): int =
   ## Create globally managed GuiObject
   if c.free_pool.len != 0:
     let idx = c.free_pool.pop()
@@ -47,100 +57,148 @@ func createGuiObj*(c: var GuiContext, t: typedesc[GuiObj]): int =
     c.object_pool.add Node(obj: new(t))
     c.object_pool.high
 
-func deref*(c: GuiContext, obj: int): ref GuiObj =
-  assert obj notin c.free_pool
+proc createGuiObj*(t: typedesc[GuiObj]): int =
+  assert current_context != nil
+  current_context.createGuiObjB(t)
+
+func deref(c: ref GuiContext, obj: int): ref GuiObj =
+  assert obj notin c.free_pool and obj < c.object_pool.len
   ## Retrieve reference to managed gui object
   c.object_pool[obj].obj
 
-func sub*(c: var GuiContext, base, obj: int) =
-  assert obj notin c.free_pool
+func subB*(c: ref GuiContext, base, obj: int) =
+  assert obj notin c.free_pool and obj < c.object_pool.len
+  assert base notin c.free_pool and base < c.object_pool.len
+  assert obj notin c.object_pool[base].subs
   c.object_pool[base].subs.add obj
   c.object_pool[obj].bases.add base
 
-func unsub*(c: var GuiContext, base, obj: int) =
-  assert obj notin c.free_pool
+proc sub*(base: int, objs: varargs[int]) =
+  assert current_context != nil
+  for obj in objs:
+    current_context.subB(base, obj)
+
+func unsubB*(c: ref GuiContext, base, obj: int) =
+  assert obj notin c.free_pool and obj < c.object_pool.len
+  assert base notin c.free_pool and base < c.object_pool.len
   let obj_idx = c.object_pool[base].subs.find(obj)
   if obj_idx == -1:
     raise newException(CatchableError, "obj isn't subscribed")
-  c.object_pool[base].subs.del(obj_idx)
+  let base_idx = c.object_pool[obj].bases.find(base)
+  assert base_idx != -1
+  c.object_pool[base].subs.del obj_idx
+  c.object_pool[obj].bases.del base_idx
 
-func del*(c: var GuiContext, obj: int) =
-  assert obj notin c.free_pool
+proc unsub*(base, obj: int) =
+  assert current_context != nil
+  current_context.unsubB(base, obj)
+
+func delB*(c: ref GuiContext, obj: int) =
+  assert obj notin c.free_pool and obj < c.object_pool.len
   for base in c.object_pool[obj].bases:
-    c.unsub base, obj
+    c.unsubB base, obj
   c.object_pool[obj].obj = nil
   c.free_pool.add obj
+  # if c.current_focus == obj:
+  #   c.current_focus = -1
 
-method drawTo(a: ref GuiObj, c: GuiContext, obj: int, t: var Terminal, start, area: Vec): Vec {.base.} =
+proc del*(obj: int) =
+  assert current_context != nil
+  current_context.delB(obj)
+
+# func focusB*(c: ref GuiContext, obj: int) =
+#   assert obj notin c.free_pool and obj < c.object_pool.len
+#   c.current_focus = obj
+
+# proc focus*(obj: int) =
+#   assert current_context != nil
+#   current_context.focusB(obj)
+
+method drawTo(a: ref GuiObj, c: ref GuiContext, t: var Terminal, obj: int, start, area: Vec): Vec {.base.} =
   result = Vec.default
   ## Draws itself to terminal buffer
   ## By convention GuiObjects should draw its children here, but it's not necessary
   ## Return value is 'displacement' vector that specifies the margins of rendered object, relative to passed area
 
-func drawHierarchy*(c: GuiContext, obj: int, t: var Terminal, start, area: Vec) =
-  discard c.deref(obj).drawTo(c, obj, t, start, area)
-
-method drawTo(a: ref ListContainer, c: GuiContext, obj: int, t: var Terminal, start, area: Vec): Vec =
+func drawToB*(c: ref GuiContext, t: var Terminal, obj: int, start, area: Vec) =
   let style_restore = t.getStyle()
+  let cursor_restore = t.getCursor()
+  discard c.deref(obj).drawTo(c, t, obj, start, area)
+  t.setStyle(style_restore)
+  t.setCursor(cursor_restore)
+
+proc drawTo*(t: var Terminal, obj: int, start = Vec.default, area: Vec = t.getSize()) =
+  assert current_context != nil
+  current_context.drawToB(t, obj, start, area)
+
+method drawTo(a: ref ListContainer, c: ref GuiContext, t: var Terminal, obj: int, start, area: Vec): Vec =
+  if area.x == 0 or area.y == 0:
+    return
   t.setBackgroundColor(a.bg)
   t.fillRect(' ', a.size)
   let clamped_area = area.clamp a.size
   var displacement: Vec
   for sub in c.object_pool[obj].subs:
+    # assert sub != obj
     displacement += (
       0u,
       drawTo(
         c.object_pool[sub].obj,
-        c, sub, t,
+        c, t, sub,
         start + displacement,
         clamped_area - displacement,
       ).y
     )
-  t.setStyle(style_restore)
   a.size
 
-method drawTo(a: ref Label, c: GuiContext, obj: int, t: var Terminal, start, area: Vec): Vec =
-  let style_restore = t.getStyle()
-  let cursor_restore = t.getCursor()
+method drawTo(a: ref Label, c: ref GuiContext, t: var Terminal, obj: int, start, area: Vec): Vec =
   t.setCursor(start)
   t.setForegroundColor(a.fg)
   t.setBackgroundColor(a.bg)
-  t.puts(a.text[0..<(min(a.text.len.uint, area.x - start.x))])
-  t.setStyle(style_restore)
-  t.setCursor(cursor_restore)
+  t.puts(a.text[0..<min(a.text.len.uint, area.x - start.x)])
   (0u, 1u)
 
-# todo: make those set methods automatically?
 
-method set*(a: ref GuiObj, property: string, string_value: string) {.base.} =
-  raise newException(CatchableError, "cannot set string properties in " & $a[])
+template newProperty(name: untyped, value_t: typedesc): untyped =
+  method `set name`*(a: ref GuiObj, value: value_t) {.inject, base.} =
+    raise newException(CatchableError, "cannot set property for " & $a[])
 
-method set*(a: ref Label, property: string, string_value: string) =
-  case property:
-  of "text":
-    a.text = string_value
-  else:
-    raise newException(CatchableError, "no string property " & property & " in " & $a[])
+  func `set name B`*(c: ref GuiContext, obj: int, value: value_t) {.inject.} =
+    assert obj notin c.free_pool and obj < c.object_pool.len
+    c.object_pool[obj].obj.`set name`(value)
 
-method set*(a: ref GuiObj, property: string, vec_value: Vec) {.base.} =
-  raise newException(CatchableError, "cannot set vector properties in " & $a[])
+  proc `set name`*(obj: int, value: value_t) {.inject.} =
+    assert current_context != nil
+    current_context.`set name B`(obj, value)
 
-method set*(a: ref ListContainer, property: string, vec_value: Vec) =
-  case property:
-  of "size":
-    a.size = vec_value
-  else:
-    raise newException(CatchableError, "no vector property " & property & " in " & $a[])
+newProperty(Text, string)
+newProperty(Size, Vec)
+newProperty(ForegroundColor, ForegroundColor)
+newProperty(BackgroundColor, BackgroundColor)
 
-method set*(a: ref GuiObj, property: string, foreground_value: ForegroundColor) {.base.} =
-  raise newException(CatchableError, "cannot set foreground color properties in " & $a[])
+method setText(a: ref Label, value: string) =
+  a.text = value
 
-method set*(a: ref GuiObj, property: string, background_value: BackgroundColor) {.base.} =
-  raise newException(CatchableError, "cannot set background color properties in " & $a[])
+method setForegroundColor(a: ref Label, value: ForegroundColor) =
+  a.fg = value
 
-method set*(a: ref ListContainer, property: string, background_value: BackgroundColor) =
-  case property:
-  of "bg":
-    a.bg = background_value
-  else:
-    raise newException(CatchableError, "no background color property " & property & " in " & $a[])
+method setBackgroundColor(a: ref Label, value: BackgroundColor) =
+  a.bg = value
+
+method setBackgroundColor(a: ref ListContainer, value: BackgroundColor) =
+  a.bg = value
+
+method setSize(a: ref ListContainer, value: Vec) =
+  a.size = value
+
+
+# method receiveInput*(a: ref GuiObj, c: ref GuiContext, obj: int, events: set[Keycode]): bool {.base.} =
+#   return false
+#   ## 'true' return signals that events are 'consumed' and shouldn't be processed anymore 
+
+# func passInputB*(с: ref GuiContext, obj: int, events: set[Keycode]) =
+#   ## TODO
+
+# proc passInput*(obj: int, events: set[Keycode]) =
+#   assert current_context != nil
+#   current_context.passInputB(obj, events)

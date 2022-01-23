@@ -320,10 +320,7 @@ proc initTerminal*(instream = stdin, outstream: File = stdout): Terminal =
 
   result.initInput()
 
-  if result.outstreamMode == termng_os.FileMode.Console:
-    result.size = result.getSize()
-  else:
-    result.size = defaultTerminalSize
+  result.size = defaultTerminalSize
 
   result.hideCursor()
   result.repeatTurnOff()
@@ -365,6 +362,9 @@ func testKeyEvent*(t: Terminal, s: Keycode): bool =
 
 func hasEvents*(t: Terminal): bool =
   t.keyEvents.len != 0
+
+func getEvents*(t: Terminal): set[Keycode] =
+  t.keyEvents
 
 proc putDebugState*(t: var Terminal) = 
   ## Print terminal-related debugging info

@@ -145,7 +145,8 @@ func parseSequence(s: string): set[Keycode] =
             KeyEscape
           else:
             parseEscape(s, current)
-      else: s[current].Keycode
+      else:
+        s[current].Keycode
     if key != KeyNone:
       result.incl key
     current.inc
